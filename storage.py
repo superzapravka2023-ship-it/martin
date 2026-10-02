@@ -1,9 +1,13 @@
 """SQLite: активные сделки, журнал закрытых, кулдауны. Переживает рестарт Railway."""
 import json
+import logging
+import os
 import sqlite3
 import time
 
 import config
+
+log = logging.getLogger("storage")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS active_trades (
@@ -43,10 +47,41 @@ CREATE TABLE IF NOT EXISTS meta (
 
 class Storage:
     def __init__(self, path=None):
-        self.conn = sqlite3.connect(path or config.DB_PATH, check_same_thread=False)
+        path = path or config.DB_PATH
+        self._ensure_dir(path)
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+
+    @staticmethod
+    def _ensure_dir(path):
+        """
+        Создаёт папку под базу, если её нет.
+
+        На Railway DB_PATH=/data/bot.db работает только когда к сервису подключён
+        том с mount path /data. Без тома папки нет, sqlite падает с
+        'unable to open database file'. Здесь папка создаётся, бот продолжает
+        работать — но база окажется внутри контейнера и сотрётся при редеплое,
+        поэтому пишем громкое предупреждение.
+        """
+        d = os.path.dirname(os.path.abspath(path))
+        if os.path.isdir(d):
+            return
+        try:
+            os.makedirs(d, exist_ok=True)
+            log.warning(
+                "Папки %s не было, создал её. Похоже, том Railway не подключён: "
+                "журнал сделок и кулдауны сотрутся при следующем редеплое. "
+                "Settings -> Volumes -> Add Volume, mount path %s",
+                d, d,
+            )
+        except OSError as e:
+            raise RuntimeError(
+                f"Не могу создать папку для базы: {d} ({e}). "
+                f"На Railway подключи том с mount path {d} "
+                f"или убери переменную DB_PATH, тогда база ляжет рядом с кодом."
+            ) from e
 
     # ---------- активные сделки ----------
 
