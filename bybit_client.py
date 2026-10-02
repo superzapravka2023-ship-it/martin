@@ -141,13 +141,14 @@ class BybitClient:
         p = (Decimal(str(price)) / tick).to_integral_value(rounding=ROUND_DOWN) * tick
         return p
 
-    def market_order(self, symbol, side, qty):
+    def market_order(self, symbol, side, qty, reduce_only=False):
         return self.http.place_order(
             category="linear",
             symbol=symbol,
             side=side,
             orderType="Market",
             qty=str(qty),
+            reduceOnly=reduce_only,
             positionIdx=0,
         )
 

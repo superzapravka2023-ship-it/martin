@@ -7,24 +7,45 @@ import config
 
 log = logging.getLogger("tg")
 
+API = "https://api.telegram.org/bot{token}/{method}"
 
-def send(text):
+
+def api(method, payload=None, timeout=30):
+    """Низкоуровневый вызов Bot API. Возвращает result или None."""
+    if not config.TELEGRAM_TOKEN:
+        return None
+    try:
+        r = requests.post(
+            API.format(token=config.TELEGRAM_TOKEN, method=method),
+            json=payload or {},
+            timeout=timeout,
+        )
+        data = r.json()
+        if not data.get("ok"):
+            log.warning("Telegram %s: %s", method, data.get("description"))
+            return None
+        return data.get("result")
+    except Exception as e:
+        log.warning("Telegram %s: %s", method, e)
+        return None
+
+
+def send(text, keyboard=None):
     if not config.TELEGRAM_TOKEN or not config.TELEGRAM_CHAT_ID:
         log.info("[TG не настроен] %s", text)
         return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage",
-            json={
-                "chat_id": config.TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=10,
-        )
-    except Exception as e:
-        log.warning("Telegram: %s", e)
+    payload = {
+        "chat_id": config.TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if keyboard:
+        payload["reply_markup"] = {"inline_keyboard": keyboard}
+    api("sendMessage", payload)
+
+
+MENU_BTN = [[{"text": "📱 Меню", "callback_data": "menu"}]]
 
 
 def entry(symbol, side, price, qty, notional, grid_prices):
@@ -36,16 +57,20 @@ def entry(symbol, side, price, qty, notional, grid_prices):
         f"{arrow} <b>{symbol}</b>\n"
         f"Вход: {price}\n"
         f"Объём: {qty} (${notional:.0f})\n"
-        f"Сетка доборов:\n{levels}"
+        f"Сетка доборов:\n{levels}",
+        keyboard=[[{"text": "📂 Позиции", "callback_data": "pos"},
+                   {"text": "📱 Меню", "callback_data": "menu"}]],
     )
 
 
 def averaging(symbol, side, step, avg_price, size, notional, new_tp):
+    bar = "▰" * step + "▱" * (4 - step)
     send(
-        f"➕ <b>{symbol}</b> усреднение #{step}\n"
+        f"➕ <b>{symbol}</b> усреднение #{step}/4  {bar}\n"
         f"Новая средняя: {avg_price}\n"
         f"Позиция: {size} (${notional:.0f})\n"
-        f"Тейк переставлен: {new_tp}"
+        f"Тейк переставлен: {new_tp}",
+        keyboard=[[{"text": "📂 Позиции", "callback_data": "pos"}]],
     )
 
 
@@ -55,7 +80,9 @@ def exit_trade(symbol, side, pnl, steps, duration_min):
         f"{icon} <b>{symbol}</b> закрыта\n"
         f"PnL: <b>{pnl:+.2f} USDT</b>\n"
         f"Усреднений: {steps}\n"
-        f"Длительность: {duration_min} мин"
+        f"Длительность: {duration_min} мин",
+        keyboard=[[{"text": "📊 Статистика", "callback_data": "stats"},
+                   {"text": "📱 Меню", "callback_data": "menu"}]],
     )
 
 
@@ -82,9 +109,10 @@ def report(title, day, month, equity, open_positions):
         f"{block('За сутки', day)}\n\n"
         f"{block('За 30 дней', month)}\n\n"
         f"<b>Эквити:</b> {equity:.2f} USDT\n"
-        f"<b>Открытые позиции:</b>\n{pos_lines}"
+        f"<b>Открытые позиции:</b>\n{pos_lines}",
+        keyboard=MENU_BTN,
     )
 
 
 def warn(text):
-    send(f"⚠️ {text}")
+    send(f"⚠️ {text}", keyboard=MENU_BTN)

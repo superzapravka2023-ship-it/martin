@@ -5,6 +5,7 @@ DCA-скальпер для Bybit (демо).
 """
 import logging
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -13,6 +14,7 @@ import notifier
 from bybit_client import BybitClient
 from scanner import Scanner
 from storage import Storage
+from telegram_ui import TelegramUI
 from trader import Trader
 
 logging.basicConfig(
@@ -33,6 +35,8 @@ class Bot:
         self.trader = Trader(self.client, self.db)
         self.last_scan = 0.0
         self.halted = False
+        self.paused = False                 # ставится кнопкой в Telegram
+        self.lock = threading.RLock()       # общий с потоком интерфейса
 
     # ------------------------------------------------------------------
 
@@ -40,6 +44,9 @@ class Bot:
         self.client.load_instruments()
         equity = self.client.equity()
         mode = "ДЕМО" if config.DEMO else "РЕАЛ"
+
+        TelegramUI(self).start()
+
         notifier.send(
             f"🤖 <b>DCA-скальпер запущен</b> ({mode})\n"
             f"Эквити: {equity:.2f} USDT\n"
@@ -47,7 +54,8 @@ class Bot:
             f"до {len(config.GRID_STEPS)} усреднений, "
             f"максимум {config.MAX_POSITIONS} позиции\n"
             f"Тейк {config.TAKE_PROFIT_PCT}% от средней, стопов нет\n"
-            f"Порог остановки: {config.EQUITY_FLOOR:.0f} USDT"
+            f"Порог остановки: {config.EQUITY_FLOOR:.0f} USDT",
+            keyboard=[[{"text": "📱 Открыть меню", "callback_data": "menu"}]],
         )
         self.loop()
 
@@ -67,7 +75,8 @@ class Bot:
 
     def tick(self):
         # 1. сверка с биржей: доборы, тейки, уборка ордеров, закрытия
-        self.trader.reconcile()
+        with self.lock:
+            self.trader.reconcile()
 
         # 2. защита счёта
         equity = self.client.equity()
@@ -85,15 +94,18 @@ class Bot:
             notifier.send(f"✅ Эквити восстановилось: {equity:.2f} USDT. Торговля возобновлена.")
 
         # 3. поиск новых входов
-        busy = self.trader.open_symbols()
-        slots = config.MAX_POSITIONS - len(busy)
-        if slots > 0 and time.time() - self.last_scan >= config.SCAN_SEC:
-            self.last_scan = time.time()
-            for symbol, side, price in self.scanner.find_signals(busy, slots):
-                if self.trader.open_position(symbol, side, price):
-                    busy.add(symbol)
-                    if len(busy) >= config.MAX_POSITIONS:
-                        break
+        if not self.paused:
+            busy = self.trader.open_symbols()
+            slots = config.MAX_POSITIONS - len(busy)
+            if slots > 0 and time.time() - self.last_scan >= config.SCAN_SEC:
+                self.last_scan = time.time()
+                for symbol, side, price in self.scanner.find_signals(busy, slots):
+                    with self.lock:
+                        opened = self.trader.open_position(symbol, side, price)
+                    if opened:
+                        busy.add(symbol)
+                        if len(busy) >= config.MAX_POSITIONS:
+                            break
 
         # 4. суточный отчёт
         self.daily_report_if_due(equity)
