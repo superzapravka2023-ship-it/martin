@@ -23,13 +23,23 @@ BASE_NOTIONAL = _f("BASE_NOTIONAL", 200)      # номинал первого о
 LEVERAGE = _i("LEVERAGE", 20)                  # кросс-маржа, 20x
 MAX_POSITIONS = _i("MAX_POSITIONS", 3)
 
-# Шаги усреднения: (отклонение от цены входа в %, номинал ордера в USDT)
-GRID_STEPS = [
-    (0.8, 260.0),
-    (1.8, 340.0),
-    (3.2, 440.0),
-    (5.0, 580.0),
+# Шаги усреднения: (отклонение от цены входа в %, множитель к BASE_NOTIONAL).
+# Множители подобраны под депозит $1000 при базе $200 — тогда суммы выходят
+# 260 / 340 / 440 / 580, а полная сетка даёт среднюю на 2.85% ниже входа.
+# Привязка к базе, а не абсолютные суммы, нужна чтобы весь размер
+# масштабировался одной переменной BASE_NOTIONAL под любой депозит.
+GRID_MULTIPLIERS = [
+    (0.8, 1.3),
+    (1.8, 1.7),
+    (3.2, 2.2),
+    (5.0, 2.9),
 ]
+
+GRID_STEPS = [(off, round(BASE_NOTIONAL * k, 2)) for off, k in GRID_MULTIPLIERS]
+
+# Полный размер одной залитой позиции и всех трёх вместе — для проверок.
+FULL_GRID_NOTIONAL = BASE_NOTIONAL + sum(n for _, n in GRID_STEPS)
+TOTAL_EXPOSURE = FULL_GRID_NOTIONAL * MAX_POSITIONS
 
 TAKE_PROFIT_PCT = _f("TAKE_PROFIT_PCT", 0.6)   # % от средней цены позиции
 

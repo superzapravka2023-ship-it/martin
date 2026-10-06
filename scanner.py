@@ -17,10 +17,30 @@ class Scanner:
 
     # ---------- вселенная ----------
 
+    # доля от целевого номинала, ниже которой монета не берётся
+    MIN_FILL_RATIO = 0.85
+
+    def _lot_fits(self, symbol, price):
+        """
+        Проверяет, что базовый ордер вообще собирается из лотов этой монеты.
+
+        При маленькой базе (например $30) дорогие монеты и монеты с крупным
+        шагом объёма либо не дотягивают до минимального лота, либо округляются
+        вниз так сильно, что геометрия сетки едет. Такие пропускаем на входе,
+        чтобы бот не пытался открыть их на каждом скане.
+        """
+        if price <= 0:
+            return False
+        qty = self.c.qty_from_notional(symbol, config.BASE_NOTIONAL, price)
+        if qty is None:
+            return False
+        return float(qty) * price >= config.BASE_NOTIONAL * self.MIN_FILL_RATIO
+
     def universe(self, tickers):
-        """Монеты: листинг >= 30 дней, оборот >= $10M, не в блэклисте. Топ-N по обороту."""
+        """Монеты: листинг >= 30 дней, оборот >= $10M, лот под базу, не в блэклисте."""
         now_ms = int(time.time() * 1000)
         rows = []
+        skipped_lot = 0
         for symbol, t in tickers.items():
             if not symbol.endswith("USDT") or symbol in config.BLACKLIST:
                 continue
@@ -32,10 +52,17 @@ class Scanner:
             turnover = float(t.get("turnover24h") or 0)
             if turnover < config.MIN_TURNOVER_24H:
                 continue
+            if not self._lot_fits(symbol, float(t.get("lastPrice") or 0)):
+                skipped_lot += 1
+                continue
             rows.append((symbol, turnover))
 
         rows.sort(key=lambda x: x[1], reverse=True)
-        return [s for s, _ in rows[: config.MAX_SCAN_SYMBOLS]]
+        picked = [s for s, _ in rows[: config.MAX_SCAN_SYMBOLS]]
+        if skipped_lot:
+            log.info("Вселенная: %d монет, ещё %d отсеяно по минимальному лоту "
+                     "(база $%.0f)", len(picked), skipped_lot, config.BASE_NOTIONAL)
+        return picked
 
     # ---------- рыночный фильтр ----------
 

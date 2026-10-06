@@ -40,21 +40,98 @@ class Bot:
 
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # проверка размеров под фактический депозит
+    # ------------------------------------------------------------------
+
+    MAX_SAFE_LEVERAGE = 6.0     # выше — отказываемся стартовать
+
+    def preflight(self, equity):
+        """
+        Сверяет размеры сетки с реальным балансом.
+
+        Параметры калибровались под депозит $1000. На другом балансе те же
+        $200 базы дают совсем другое плечо, а EQUITY_FLOOR может оказаться
+        выше эквити — тогда бот молча встанет и не сделает ни одной сделки.
+        Возвращает (список_проблем, список_заметок).
+        """
+        full_grid = config.BASE_NOTIONAL + sum(n for _, n in config.GRID_STEPS)
+        total = full_grid * config.MAX_POSITIONS
+        lev = total / equity if equity > 0 else float("inf")
+
+        # Запас до нуля: при полных сетках убыток растёт примерно как
+        # total * (просадка - средневзвешенное отклонение входов).
+        avg_dev = sum(off * n for off, n in config.GRID_STEPS) / full_grid / 100
+        ruin_pct = (equity / total + avg_dev) * 100 if total else 0
+
+        errors, notes = [], []
+
+        if equity <= 0:
+            errors.append("Биржа вернула нулевой баланс — проверь ключи и тип аккаунта (UNIFIED).")
+            return errors, notes
+
+        if config.EQUITY_FLOOR >= equity:
+            errors.append(
+                f"EQUITY_FLOOR ({config.EQUITY_FLOOR:.0f}) не ниже баланса ({equity:.2f}). "
+                f"Бот встанет сразу же. Поставь примерно {equity*0.6:.0f}."
+            )
+        elif config.EQUITY_FLOOR < equity * 0.3:
+            notes.append(
+                f"EQUITY_FLOOR {config.EQUITY_FLOOR:.0f} — это всего "
+                f"{config.EQUITY_FLOOR/equity*100:.0f}% баланса. Бот остановится, "
+                f"потеряв {100-config.EQUITY_FLOOR/equity*100:.0f}%. Обычно ставят ~60%."
+            )
+
+        if lev > self.MAX_SAFE_LEVERAGE:
+            # сетка привязана к базе множителями, поэтому хватает одной переменной
+            want = equity / 5.0
+            errors.append(
+                f"Три полные сетки — ${total:.0f} при балансе {equity:.2f} USDT, "
+                f"это плечо {lev:.1f}x. Ликвидация примерно на −{ruin_pct:.0f}% "
+                f"от входов. Поставь в Railway BASE_NOTIONAL={want:.0f} — сетка "
+                f"пересчитается сама в "
+                f"{'/'.join(f'${want*k:.0f}' for _, k in config.GRID_MULTIPLIERS)}, "
+                f"плечо станет около 5.5x, как на демо."
+            )
+        else:
+            notes.append(
+                f"Три полные сетки ${total:.0f} = плечо {lev:.1f}x, "
+                f"запас до нуля примерно −{ruin_pct:.0f}% от входов."
+            )
+        return errors, notes
+
+    # ------------------------------------------------------------------
+
     def start(self):
         self.client.load_instruments()
         equity = self.client.equity()
-        mode = "ДЕМО" if config.DEMO else "РЕАЛ"
+        live = not config.DEMO
+        mode = "РЕАЛ" if live else "ДЕМО"
 
         TelegramUI(self).start()
 
+        errors, notes = self.preflight(equity)
+        if errors:
+            body = "\n".join(f"• {e}" for e in errors)
+            log.error("Проверка размеров не пройдена:\n%s", body)
+            notifier.send(
+                f"⛔️ <b>Бот НЕ запущен</b> ({mode})\n"
+                f"Баланс: {equity:.2f} USDT\n\n"
+                f"<b>Размеры не подходят под этот депозит:</b>\n{body}\n\n"
+                f"Поправь переменные в Railway и передеплой."
+            )
+            sys.exit(1)
+
+        extra = ("\n" + "\n".join(f"ℹ️ {n}" for n in notes)) if notes else ""
+        head = "🔴 <b>РЕАЛЬНЫЕ ДЕНЬГИ</b>\n" if live else ""
         notifier.send(
-            f"🤖 <b>DCA-скальпер запущен</b> ({mode})\n"
+            f"{head}🤖 <b>DCA-скальпер запущен</b> ({mode})\n"
             f"Эквити: {equity:.2f} USDT\n"
             f"База ${config.BASE_NOTIONAL:.0f} × {config.LEVERAGE}x, "
             f"до {len(config.GRID_STEPS)} усреднений, "
             f"максимум {config.MAX_POSITIONS} позиции\n"
             f"Тейк {config.TAKE_PROFIT_PCT}% от средней, стопов нет\n"
-            f"Порог остановки: {config.EQUITY_FLOOR:.0f} USDT",
+            f"Порог остановки: {config.EQUITY_FLOOR:.0f} USDT{extra}",
             keyboard=[[{"text": "📱 Открыть меню", "callback_data": "menu"}]],
         )
         self.loop()
